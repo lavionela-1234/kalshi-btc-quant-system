@@ -1,0 +1,20 @@
+
+# Secrets
+.env
+*.pem
+*.key
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local data
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# macOS
+.DS_Store

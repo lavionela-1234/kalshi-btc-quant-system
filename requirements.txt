@@ -1,0 +1,13 @@
+aiohttp>=3.10
+websockets>=13
+requests>=2.32
+cryptography>=43
+pandas>=2.2
+numpy>=2.0
+scikit-learn>=1.5
+joblib>=1.4
+python-dotenv>=1.0
+pydantic>=2.8
+streamlit>=1.37
+plotly>=5.23
+pytest>=8.3
