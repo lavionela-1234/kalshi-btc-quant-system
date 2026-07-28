@@ -18,6 +18,7 @@ from kalshi_quant.dashboard_data import (
     recent_trades,
 )
 from kalshi_quant.indicators import add_market_indicators
+from kalshi_quant.market_signal import evaluate_market_signal
 
 st.set_page_config(
     page_title="Kalshi BTC Quant",
@@ -135,6 +136,13 @@ with tab1:
             )
 
     else:
+        try:
+            technical_signal = evaluate_market_signal(bars)
+            signal_error = None
+        except ValueError as exc:
+            technical_signal = None
+            signal_error = str(exc)
+
         bars = add_market_indicators(bars)
 
         latest_bar = bars.iloc[-1]
@@ -178,6 +186,106 @@ with tab1:
             {latest_bar["start_time"]}
             """
         )
+
+        st.subheader("Technical market signal")
+
+        if technical_signal is None:
+            st.info(
+                "Technical signal unavailable: "
+                f"{signal_error or 'Insufficient market data.'}"
+            )
+        else:
+            signal_kpis = st.columns(6)
+
+            signal_kpis[0].metric(
+                "Direction",
+                technical_signal.direction,
+            )
+
+            signal_kpis[1].metric(
+                "Action",
+                technical_signal.action.replace("_", " "),
+            )
+
+            signal_kpis[2].metric(
+                "Composite score",
+                f"{technical_signal.score:+.1f}",
+            )
+
+            signal_kpis[3].metric(
+                "Technical P(up)",
+                f"{technical_signal.probability_up:.1%}",
+            )
+
+            signal_kpis[4].metric(
+                "Confidence",
+                f"{technical_signal.confidence:.1%}",
+            )
+
+            signal_kpis[5].metric(
+                "Volatility regime",
+                technical_signal.volatility_regime,
+            )
+
+            st.caption(technical_signal.reason)
+
+            component_data = pd.DataFrame(
+                {
+                    "Component": [
+                        "Trend",
+                        "Momentum",
+                        "VWAP",
+                        "RSI",
+                        "Order flow",
+                    ],
+                    "Score": [
+                        technical_signal.trend_score,
+                        technical_signal.momentum_score,
+                        technical_signal.vwap_score,
+                        technical_signal.rsi_score,
+                        technical_signal.order_flow_score,
+                    ],
+                }
+            )
+
+            component_chart = go.Figure(
+                go.Bar(
+                    x=component_data["Component"],
+                    y=component_data["Score"],
+                    text=[
+                        f"{value:+.1f}"
+                        for value in component_data["Score"]
+                    ],
+                    textposition="auto",
+                    name="Component score",
+                )
+            )
+
+            component_chart.add_hline(
+                y=0,
+                line_dash="dash",
+            )
+
+            component_chart.update_layout(
+                title="Technical signal components",
+                xaxis_title="Component",
+                yaxis_title="Bullish / bearish contribution",
+                height=350,
+                showlegend=False,
+            )
+
+            st.plotly_chart(
+                component_chart,
+                width="stretch",
+            )
+
+            st.caption(
+                "Technical research signal only. The final Kalshi "
+                "trade decision must still pass order-book edge, "
+                "spread, time-window, and risk checks."
+            )
+
+        st.divider()
 
         kpi_row_one = st.columns(6)
 
