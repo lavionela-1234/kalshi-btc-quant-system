@@ -7,6 +7,7 @@ import pandas as pd
 
 from .bars import initialize_bar_store
 from .db import DEFAULT_DB_PATH, database_connection
+from .signal_store import recent_market_signals
 from .trade_store import initialize_trade_store
 
 
@@ -183,5 +184,54 @@ def recent_trades(
             dataframe["timestamp"],
             utc=True,
         )
+
+    return dataframe
+
+
+def recent_signal_history(
+    product_id: str = "BTC-USD",
+    interval_seconds: int = 5,
+    limit: int = 200,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    """Load stored technical signals in chronological order."""
+    rows = recent_market_signals(
+        product_id=product_id,
+        interval_seconds=interval_seconds,
+        limit=limit,
+        db_path=db_path,
+    )
+
+    dataframe = pd.DataFrame(rows)
+
+    if dataframe.empty:
+        return dataframe
+
+    dataframe = dataframe.iloc[::-1].reset_index(drop=True)
+    dataframe["timestamp"] = pd.to_datetime(
+        dataframe["timestamp"],
+        utc=True,
+    )
+
+    numeric_columns = [
+        "score",
+        "probability_up",
+        "confidence",
+        "trend_score",
+        "momentum_score",
+        "vwap_score",
+        "rsi_score",
+        "order_flow_score",
+        "order_flow_imbalance",
+        "order_flow_reliability",
+        "timeframe_agreement",
+    ]
+
+    for column in numeric_columns:
+        if column in dataframe.columns:
+            dataframe[column] = pd.to_numeric(
+                dataframe[column],
+                errors="coerce",
+            )
 
     return dataframe

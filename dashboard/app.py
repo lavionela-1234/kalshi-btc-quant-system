@@ -15,6 +15,7 @@ from kalshi_quant.backtest import metrics
 from kalshi_quant.dashboard_data import (
     market_summary,
     recent_bars,
+    recent_signal_history,
     recent_trades,
 )
 from kalshi_quant.indicators import add_market_indicators
@@ -136,8 +137,21 @@ with tab1:
             )
 
     else:
+        confirmation_bars = recent_bars(
+            product_id=product_id,
+            interval_seconds=60,
+            limit=max(bar_limit, 100),
+        )
+
         try:
-            technical_signal = evaluate_market_signal(bars)
+            technical_signal = evaluate_market_signal(
+                bars,
+                confirmation_bars=(
+                    confirmation_bars
+                    if interval_seconds != 60
+                    else None
+                ),
+            )
             signal_error = None
         except ValueError as exc:
             technical_signal = None
@@ -283,6 +297,129 @@ with tab1:
                 "Technical research signal only. The final Kalshi "
                 "trade decision must still pass order-book edge, "
                 "spread, time-window, and risk checks."
+            )
+
+        st.subheader("Automatic 5-second signal history")
+
+        signal_history = recent_signal_history(
+            product_id=product_id,
+            interval_seconds=5,
+            limit=200,
+        )
+
+        if signal_history.empty:
+            st.info(
+                "No automatic signals are stored yet. Start the "
+                "Coinbase recorder and allow at least 20 completed "
+                "5-second bars to accumulate."
+            )
+        else:
+            latest_stored_signal = signal_history.iloc[-1]
+            history_kpis = st.columns(4)
+
+            history_kpis[0].metric(
+                "Stored signals",
+                f"{len(signal_history):,}",
+            )
+            history_kpis[1].metric(
+                "Latest stored score",
+                f'{float(latest_stored_signal["score"]):+.1f}',
+            )
+            history_kpis[2].metric(
+                "Latest stored P(up)",
+                f'{float(latest_stored_signal["probability_up"]):.1%}',
+            )
+            history_kpis[3].metric(
+                "Latest stored confidence",
+                f'{float(latest_stored_signal["confidence"]):.1%}',
+            )
+
+            history_left, history_right = st.columns(2)
+
+            score_history_chart = go.Figure()
+            score_history_chart.add_trace(
+                go.Scatter(
+                    x=signal_history["timestamp"],
+                    y=signal_history["score"],
+                    mode="lines+markers",
+                    name="Technical score",
+                )
+            )
+            score_history_chart.add_hline(
+                y=25,
+                line_dash="dash",
+                annotation_text="Long-bias threshold",
+            )
+            score_history_chart.add_hline(
+                y=-25,
+                line_dash="dash",
+                annotation_text="Short-bias threshold",
+            )
+            score_history_chart.add_hline(
+                y=0,
+                line_dash="dot",
+            )
+            score_history_chart.update_layout(
+                title="Stored technical score",
+                xaxis_title="Time",
+                yaxis_title="Score",
+                yaxis={"range": [-100, 100]},
+                height=375,
+                showlegend=False,
+            )
+            history_left.plotly_chart(
+                score_history_chart,
+                width="stretch",
+            )
+
+            probability_history_chart = go.Figure()
+            probability_history_chart.add_trace(
+                go.Scatter(
+                    x=signal_history["timestamp"],
+                    y=signal_history["probability_up"] * 100,
+                    mode="lines",
+                    name="Technical P(up)",
+                )
+            )
+            probability_history_chart.add_trace(
+                go.Scatter(
+                    x=signal_history["timestamp"],
+                    y=signal_history["confidence"] * 100,
+                    mode="lines",
+                    name="Confidence",
+                )
+            )
+            probability_history_chart.update_layout(
+                title="Probability and confidence history",
+                xaxis_title="Time",
+                yaxis_title="Percent",
+                yaxis={"range": [0, 100]},
+                height=375,
+                hovermode="x unified",
+            )
+            history_right.plotly_chart(
+                probability_history_chart,
+                width="stretch",
+            )
+
+            history_columns = [
+                "timestamp",
+                "direction",
+                "action",
+                "score",
+                "probability_up",
+                "confidence",
+                "volatility_regime",
+                "order_flow_imbalance",
+                "order_flow_reliability",
+                "timeframe_confirmation",
+                "timeframe_agreement",
+            ]
+
+            st.dataframe(
+                signal_history[history_columns].iloc[::-1],
+                width="stretch",
+                hide_index=True,
             )
 
         st.divider()
