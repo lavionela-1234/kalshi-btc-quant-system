@@ -14,10 +14,14 @@ import streamlit as st
 from kalshi_quant.backtest import metrics
 from kalshi_quant.dashboard_data import (
     market_summary,
+    paper_trading_summary,
     recent_bars,
+    recent_paper_decisions,
+    recent_paper_trades,
     recent_signal_history,
     recent_trades,
 )
+from kalshi_quant.config import Settings
 from kalshi_quant.indicators import add_market_indicators
 from kalshi_quant.market_signal import evaluate_market_signal
 
@@ -33,11 +37,12 @@ st.caption(
     "backtesting, and paper trading"
 )
 
-tab1, tab2, tab3 = st.tabs(
+tab1, tab2, tab3, tab4 = st.tabs(
     [
         "Coinbase Market",
         "Backtest",
         "Live Snapshots",
+        "Paper Trading",
     ]
 )
 
@@ -966,3 +971,112 @@ with tab3:
             )
     else:
         st.info("Run the live paper engine first.")
+
+with tab4:
+    settings = Settings()
+    summary = paper_trading_summary()
+
+    st.subheader("Automatic paper trading")
+
+    if not settings.paper_mode:
+        st.error(
+            "PAPER_MODE is disabled. No simulated entries will be "
+            "created until PAPER_MODE=true."
+        )
+    elif not settings.kalshi_market_ticker:
+        st.info(
+            "Paper trading is ready but inactive. Configure "
+            "KALSHI_MARKET_TICKER and KALSHI_TARGET_PRICE in .env."
+        )
+    else:
+        st.success(
+            "Simulation only — no live-order method is called. "
+            f"Configured market: {settings.kalshi_market_ticker}"
+        )
+
+    kpis = st.columns(6)
+    kpis[0].metric(
+        "Paper bankroll",
+        f"${settings.paper_bankroll:,.2f}",
+    )
+    kpis[1].metric(
+        "Decisions",
+        f"{summary['total_decisions']:,}",
+    )
+    kpis[2].metric(
+        "Simulated trades",
+        f"{summary['total_trades']:,}",
+    )
+    kpis[3].metric(
+        "Open trades",
+        f"{summary['open_trades']:,}",
+    )
+    kpis[4].metric(
+        "Total stake",
+        f"${summary['total_stake']:,.2f}",
+    )
+    kpis[5].metric(
+        "Realized P&L",
+        f"${summary['realized_pnl']:,.2f}",
+    )
+
+    st.caption(
+        "Entries must pass technical direction, confidence, Kalshi "
+        "edge, spread, time-window, daily-loss, and Kelly-size checks."
+    )
+
+    decisions = recent_paper_decisions(limit=200)
+
+    st.subheader("Recent paper decisions")
+
+    if decisions.empty:
+        st.info("No paper decisions have been stored yet.")
+    else:
+        decision_chart = px.scatter(
+            decisions.sort_values("signal_timestamp"),
+            x="signal_timestamp",
+            y="technical_score",
+            color="decision",
+            hover_data=[
+                "market_ticker",
+                "side",
+                "edge",
+                "contracts",
+                "stake",
+                "reason",
+            ],
+            title="Technical score and paper decisions",
+        )
+
+        decision_chart.add_hline(
+            y=25,
+            line_dash="dash",
+        )
+        decision_chart.add_hline(
+            y=-25,
+            line_dash="dash",
+        )
+
+        st.plotly_chart(
+            decision_chart,
+            width="stretch",
+        )
+
+        st.dataframe(
+            decisions,
+            width="stretch",
+            hide_index=True,
+        )
+
+    trades = recent_paper_trades(limit=200)
+
+    st.subheader("Simulated paper trades")
+
+    if trades.empty:
+        st.info("No simulated paper trades have been opened.")
+    else:
+        st.dataframe(
+            trades,
+            width="stretch",
+            hide_index=True,
+        )

@@ -7,6 +7,11 @@ import pandas as pd
 
 from .bars import initialize_bar_store
 from .db import DEFAULT_DB_PATH, database_connection
+from .paper_trade_store import (
+    paper_trade_summary as load_paper_trade_summary,
+    recent_paper_decisions as load_paper_decisions,
+    recent_paper_trades as load_paper_trades,
+)
 from .signal_store import recent_market_signals
 from .trade_store import initialize_trade_store
 
@@ -16,24 +21,23 @@ def market_summary(
     interval_seconds: int = 60,
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> dict[str, Any]:
-    """Return headline Coinbase market statistics."""
     initialize_trade_store(db_path)
     initialize_bar_store(db_path)
 
     with database_connection(db_path) as connection:
         trade_row = connection.execute(
-            """
+            '''
             SELECT
                 COUNT(*) AS trade_count,
                 MAX(timestamp) AS latest_trade_time
             FROM coinbase_trades
             WHERE product_id = ?
-            """,
+            ''',
             (product_id,),
         ).fetchone()
 
         latest_trade_row = connection.execute(
-            """
+            '''
             SELECT
                 trade_id,
                 product_id,
@@ -45,22 +49,22 @@ def market_summary(
             WHERE product_id = ?
             ORDER BY timestamp DESC, id DESC
             LIMIT 1
-            """,
+            ''',
             (product_id,),
         ).fetchone()
 
         bar_count_row = connection.execute(
-            """
+            '''
             SELECT COUNT(*) AS bar_count
             FROM coinbase_bars
             WHERE product_id = ?
               AND interval_seconds = ?
-            """,
+            ''',
             (product_id, interval_seconds),
         ).fetchone()
 
         latest_bar_row = connection.execute(
-            """
+            '''
             SELECT
                 product_id,
                 interval_seconds,
@@ -80,7 +84,7 @@ def market_summary(
               AND interval_seconds = ?
             ORDER BY start_time DESC
             LIMIT 1
-            """,
+            ''',
             (product_id, interval_seconds),
         ).fetchone()
 
@@ -107,12 +111,11 @@ def recent_bars(
     limit: int = 300,
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> pd.DataFrame:
-    """Load recent OHLCV bars in chronological order."""
     initialize_bar_store(db_path)
 
     with database_connection(db_path) as connection:
         rows = connection.execute(
-            """
+            '''
             SELECT
                 start_time,
                 end_time,
@@ -130,7 +133,7 @@ def recent_bars(
               AND interval_seconds = ?
             ORDER BY start_time DESC
             LIMIT ?
-            """,
+            ''',
             (product_id, interval_seconds, limit),
         ).fetchall()
 
@@ -157,12 +160,11 @@ def recent_trades(
     limit: int = 200,
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> pd.DataFrame:
-    """Load recent Coinbase trades, newest first."""
     initialize_trade_store(db_path)
 
     with database_connection(db_path) as connection:
         rows = connection.execute(
-            """
+            '''
             SELECT
                 timestamp,
                 trade_id,
@@ -173,7 +175,7 @@ def recent_trades(
             WHERE product_id = ?
             ORDER BY timestamp DESC, id DESC
             LIMIT ?
-            """,
+            ''',
             (product_id, limit),
         ).fetchall()
 
@@ -194,7 +196,6 @@ def recent_signal_history(
     limit: int = 200,
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> pd.DataFrame:
-    """Load stored technical signals in chronological order."""
     rows = recent_market_signals(
         product_id=product_id,
         interval_seconds=interval_seconds,
@@ -233,5 +234,55 @@ def recent_signal_history(
                 dataframe[column],
                 errors="coerce",
             )
+
+    return dataframe
+
+
+def paper_trading_summary(
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    return load_paper_trade_summary(db_path)
+
+
+def recent_paper_decisions(
+    limit: int = 200,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    dataframe = pd.DataFrame(
+        load_paper_decisions(
+            limit=limit,
+            db_path=db_path,
+        )
+    )
+
+    if not dataframe.empty:
+        dataframe["signal_timestamp"] = pd.to_datetime(
+            dataframe["signal_timestamp"],
+            utc=True,
+        )
+        dataframe["evaluated_at"] = pd.to_datetime(
+            dataframe["evaluated_at"],
+            utc=True,
+        )
+
+    return dataframe
+
+
+def recent_paper_trades(
+    limit: int = 200,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    dataframe = pd.DataFrame(
+        load_paper_trades(
+            limit=limit,
+            db_path=db_path,
+        )
+    )
+
+    if not dataframe.empty:
+        dataframe["opened_at"] = pd.to_datetime(
+            dataframe["opened_at"],
+            utc=True,
+        )
 
     return dataframe

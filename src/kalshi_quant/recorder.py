@@ -7,8 +7,10 @@ from typing import Any
 from .automatic_signal_pipeline import AutomaticSignalPipeline
 from .bars import bar_count
 from .coinbase import stream_trades
+from .config import Settings
 from .db import DEFAULT_DB_PATH, log_event
 from .live_bar_builder import LiveBarBuilder
+from .paper_trading_engine import PaperTradingEngine
 from .trade_store import (
     initialize_trade_store,
     save_coinbase_trade,
@@ -17,7 +19,7 @@ from .trade_store import (
 
 
 class CoinbaseTradeRecorder:
-    """Record live Coinbase trades, bars, and technical signals."""
+    """Record trades, build bars, signals, and paper decisions."""
 
     def __init__(
         self,
@@ -30,11 +32,13 @@ class CoinbaseTradeRecorder:
         signal_confirmation_interval_seconds: int = 60,
         signal_bar_limit: int = 300,
         signal_min_bars: int = 20,
+        settings: Settings | None = None,
     ) -> None:
         self.product_id = product_id
         self.db_path = Path(db_path)
         self.status_interval = max(1, status_interval)
         self.session_count = 0
+        self.settings = settings or Settings()
 
         self.bar_builder = LiveBarBuilder(
             intervals=bar_intervals,
@@ -53,8 +57,12 @@ class CoinbaseTradeRecorder:
             min_bars=signal_min_bars,
         )
 
+        self.paper_engine = PaperTradingEngine(
+            settings=self.settings,
+            db_path=self.db_path,
+        )
+
     async def on_trade(self, trade: dict[str, Any]) -> None:
-        """Save one Coinbase trade and update bars and signals."""
         inserted = save_coinbase_trade(
             trade=trade,
             db_path=self.db_path,
@@ -101,6 +109,34 @@ class CoinbaseTradeRecorder:
                 f"confidence {signal.confidence:.1%}"
             )
 
+            try:
+                outcome = await asyncio.to_thread(
+                    self.paper_engine.process_signal,
+                    signal=signal,
+                    btc_price=float(trade["price"]),
+                )
+                print(
+                    "Paper decision | "
+                    f"{outcome.decision} | "
+                    f"{outcome.side or '-'} | "
+                    f"edge {outcome.edge:+.1%} | "
+                    f"{outcome.contracts} contracts | "
+                    f"${outcome.stake:,.2f} | "
+                    f"{outcome.reason}"
+                )
+            except Exception as exc:
+                log_event(
+                    level="ERROR",
+                    component="paper_trading_engine",
+                    message="Paper-trading evaluation failed",
+                    details={
+                        "product_id": self.product_id,
+                        "error": str(exc),
+                    },
+                    db_path=self.db_path,
+                )
+                print(f"Paper engine error: {exc}")
+
         if self.session_count % self.status_interval == 0:
             total = trade_count(self.db_path)
 
@@ -117,43 +153,39 @@ class CoinbaseTradeRecorder:
                 f"{total:,} total trades | "
                 f"latest BTC ${float(trade['price']):,.2f} | "
                 f"closed now: {len(closed_bars)} | "
-                f"signals this session: "
-                f"{self.signal_pipeline.generated_count:,} | "
+                f"signals: {self.signal_pipeline.generated_count:,} | "
+                f"paper opens: {self.paper_engine.opened_count:,} | "
                 f"{bar_status}"
             )
 
     async def run(self) -> None:
-        """Initialize storage and start the live market pipeline."""
         initialize_trade_store(self.db_path)
 
         log_event(
             level="INFO",
             component="coinbase_recorder",
             message=(
-                "Coinbase live trade, bar, and signal pipeline started"
+                "Coinbase bars, signals, and paper pipeline started"
             ),
             details={
                 "product_id": self.product_id,
                 "database": str(self.db_path),
                 "bar_intervals": list(self.bar_builder.intervals),
-                "signal_interval_seconds": (
-                    self.signal_pipeline.primary_interval_seconds
-                ),
-                "signal_confirmation_interval_seconds": (
-                    self.signal_pipeline.confirmation_interval_seconds
+                "paper_mode": self.settings.paper_mode,
+                "kalshi_market_ticker": (
+                    self.settings.kalshi_market_ticker
                 ),
             },
             db_path=self.db_path,
         )
 
-        existing_count = trade_count(self.db_path)
-
-        print("Kalshi BTC Quant System — Automatic Signal Pipeline")
-        print(f"Product:         {self.product_id}")
-        print(f"Database:        {self.db_path}")
-        print(f"Existing trades: {existing_count:,}")
         print(
-            "Live bars:       "
+            "Kalshi BTC Quant System — Paper Trading Pipeline"
+        )
+        print(f"Product:          {self.product_id}")
+        print(f"Database:         {self.db_path}")
+        print(
+            "Live bars:        "
             + ", ".join(
                 f"{interval}s"
                 for interval in self.bar_builder.intervals
@@ -165,6 +197,15 @@ class CoinbaseTradeRecorder:
             f"{self.signal_pipeline.confirmation_interval_seconds}s "
             "confirmation"
         )
+        print(
+            "Paper trading:    "
+            + (
+                f"ENABLED for {self.paper_engine.market_ticker}"
+                if self.paper_engine.enabled
+                else "DISABLED — configure KALSHI_MARKET_TICKER"
+            )
+        )
+        print("No live-order method is used by this recorder.")
         print("Press Control+C to stop.\n")
 
         try:
@@ -174,27 +215,24 @@ class CoinbaseTradeRecorder:
             )
         finally:
             flushed_bars = self.bar_builder.flush()
-            stats = self.signal_pipeline.stats()
+            signal_stats = self.signal_pipeline.stats()
 
             log_event(
                 level="INFO",
                 component="coinbase_recorder",
                 message=(
-                    "Coinbase live trade, bar, and signal pipeline stopped"
+                    "Coinbase bars, signals, and paper pipeline stopped"
                 ),
                 details={
                     "session_trades": self.session_count,
                     "total_trades": trade_count(self.db_path),
-                    "closed_bars": self.bar_builder.closed_bar_count,
                     "flushed_partial_bars": len(flushed_bars),
-                    "late_trades": self.bar_builder.late_trade_count,
-                    "checkpoints": self.bar_builder.checkpoint_count,
-                    "signals_generated": stats.generated,
-                    "signal_duplicate_skips": stats.duplicate_skips,
-                    "signal_insufficient_data_skips": (
-                        stats.insufficient_data_skips
-                    ),
-                    "signal_ignored_bars": stats.ignored_bars,
+                    "signals_generated": signal_stats.generated,
+                    "paper_evaluated": self.paper_engine.evaluated_count,
+                    "paper_opened": self.paper_engine.opened_count,
+                    "paper_skipped": self.paper_engine.skipped_count,
+                    "paper_blocked": self.paper_engine.blocked_count,
+                    "paper_duplicates": self.paper_engine.duplicate_count,
                 },
                 db_path=self.db_path,
             )
@@ -205,7 +243,11 @@ class CoinbaseTradeRecorder:
             )
             print(
                 "Automatic signals created this session: "
-                f"{stats.generated:,}"
+                f"{signal_stats.generated:,}"
+            )
+            print(
+                "Simulated paper trades opened this session: "
+                f"{self.paper_engine.opened_count:,}"
             )
 
 
