@@ -14,6 +14,7 @@ import streamlit as st
 from kalshi_quant.backtest import metrics
 from kalshi_quant.dashboard_data import (
     market_summary,
+    paper_bankroll_history,
     paper_trading_summary,
     recent_bars,
     recent_paper_decisions,
@@ -974,9 +975,11 @@ with tab3:
 
 with tab4:
     settings = Settings()
-    summary = paper_trading_summary()
+    summary = paper_trading_summary(
+        starting_bankroll=settings.paper_bankroll,
+    )
 
-    st.subheader("Automatic paper trading")
+    st.subheader("Automatic paper trading and settlement")
 
     if not settings.paper_mode:
         st.error(
@@ -994,36 +997,106 @@ with tab4:
             f"Configured market: {settings.kalshi_market_ticker}"
         )
 
-    kpis = st.columns(6)
-    kpis[0].metric(
-        "Paper bankroll",
-        f"${settings.paper_bankroll:,.2f}",
+    top_kpis = st.columns(6)
+    top_kpis[0].metric(
+        "Current bankroll",
+        f"${summary['current_bankroll']:,.2f}",
+        delta=f"${summary['realized_pnl']:+,.2f}",
     )
-    kpis[1].metric(
+    top_kpis[1].metric(
+        "Realized P&L",
+        f"${summary['realized_pnl']:+,.2f}",
+    )
+    top_kpis[2].metric(
+        "ROI",
+        f"{summary['roi']:.2%}",
+    )
+    top_kpis[3].metric(
+        "Closed trades",
+        f"{summary['closed_trades']:,}",
+    )
+    top_kpis[4].metric(
+        "Win rate",
+        f"{summary['win_rate']:.1%}",
+    )
+    top_kpis[5].metric(
+        "Max drawdown",
+        f"{summary['max_drawdown']:.2%}",
+    )
+
+    secondary_kpis = st.columns(6)
+    secondary_kpis[0].metric(
         "Decisions",
         f"{summary['total_decisions']:,}",
     )
-    kpis[2].metric(
+    secondary_kpis[1].metric(
         "Simulated trades",
         f"{summary['total_trades']:,}",
     )
-    kpis[3].metric(
+    secondary_kpis[2].metric(
         "Open trades",
         f"{summary['open_trades']:,}",
     )
-    kpis[4].metric(
-        "Total stake",
-        f"${summary['total_stake']:,.2f}",
+    secondary_kpis[3].metric(
+        "Wins / losses",
+        f"{summary['wins']:,} / {summary['losses']:,}",
     )
-    kpis[5].metric(
-        "Realized P&L",
-        f"${summary['realized_pnl']:,.2f}",
+    secondary_kpis[4].metric(
+        "Active stake",
+        f"${summary['active_stake']:,.2f}",
+    )
+    secondary_kpis[5].metric(
+        "Average P&L",
+        f"${summary['average_pnl']:+,.2f}",
     )
 
     st.caption(
         "Entries must pass technical direction, confidence, Kalshi "
-        "edge, spread, time-window, daily-loss, and Kelly-size checks."
+        "edge, spread, time-window, daily-loss, and Kelly-size checks. "
+        "Open trades close only after a final YES or NO market result."
     )
+
+    history = paper_bankroll_history(limit=1000)
+
+    st.subheader("Bankroll and drawdown")
+
+    if history.empty:
+        st.info(
+            "No settled paper trades are available for the "
+            "performance charts yet."
+        )
+    else:
+        equity_chart = px.line(
+            history,
+            x="settled_at",
+            y=["bankroll_after", "peak_bankroll"],
+            markers=True,
+            title="Paper bankroll and running peak",
+        )
+        st.plotly_chart(
+            equity_chart,
+            width="stretch",
+        )
+
+        pnl_chart = px.bar(
+            history,
+            x="settled_at",
+            y="pnl",
+            hover_data=[
+                "market_ticker",
+                "side",
+                "market_result",
+                "contracts",
+                "stake",
+                "bankroll_after",
+                "drawdown",
+            ],
+            title="Realized P&L by settled paper trade",
+        )
+        st.plotly_chart(
+            pnl_chart,
+            width="stretch",
+        )
 
     decisions = recent_paper_decisions(limit=200)
 
@@ -1080,3 +1153,4 @@ with tab4:
             width="stretch",
             hide_index=True,
         )
+

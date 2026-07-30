@@ -7,10 +7,13 @@ import pandas as pd
 
 from .bars import initialize_bar_store
 from .db import DEFAULT_DB_PATH, database_connection
-from .paper_trade_store import (
+from .paper_trade_lifecycle import (
+    paper_bankroll_history as load_bankroll_history,
     paper_trade_summary as load_paper_trade_summary,
-    recent_paper_decisions as load_paper_decisions,
     recent_paper_trades as load_paper_trades,
+)
+from .paper_trade_store import (
+    recent_paper_decisions as load_paper_decisions,
 )
 from .signal_store import recent_market_signals
 from .trade_store import initialize_trade_store
@@ -26,18 +29,18 @@ def market_summary(
 
     with database_connection(db_path) as connection:
         trade_row = connection.execute(
-            '''
+            """
             SELECT
                 COUNT(*) AS trade_count,
                 MAX(timestamp) AS latest_trade_time
             FROM coinbase_trades
             WHERE product_id = ?
-            ''',
+            """,
             (product_id,),
         ).fetchone()
 
         latest_trade_row = connection.execute(
-            '''
+            """
             SELECT
                 trade_id,
                 product_id,
@@ -49,22 +52,22 @@ def market_summary(
             WHERE product_id = ?
             ORDER BY timestamp DESC, id DESC
             LIMIT 1
-            ''',
+            """,
             (product_id,),
         ).fetchone()
 
         bar_count_row = connection.execute(
-            '''
+            """
             SELECT COUNT(*) AS bar_count
             FROM coinbase_bars
             WHERE product_id = ?
               AND interval_seconds = ?
-            ''',
+            """,
             (product_id, interval_seconds),
         ).fetchone()
 
         latest_bar_row = connection.execute(
-            '''
+            """
             SELECT
                 product_id,
                 interval_seconds,
@@ -84,7 +87,7 @@ def market_summary(
               AND interval_seconds = ?
             ORDER BY start_time DESC
             LIMIT 1
-            ''',
+            """,
             (product_id, interval_seconds),
         ).fetchone()
 
@@ -115,7 +118,7 @@ def recent_bars(
 
     with database_connection(db_path) as connection:
         rows = connection.execute(
-            '''
+            """
             SELECT
                 start_time,
                 end_time,
@@ -133,7 +136,7 @@ def recent_bars(
               AND interval_seconds = ?
             ORDER BY start_time DESC
             LIMIT ?
-            ''',
+            """,
             (product_id, interval_seconds, limit),
         ).fetchall()
 
@@ -164,7 +167,7 @@ def recent_trades(
 
     with database_connection(db_path) as connection:
         rows = connection.execute(
-            '''
+            """
             SELECT
                 timestamp,
                 trade_id,
@@ -175,7 +178,7 @@ def recent_trades(
             WHERE product_id = ?
             ORDER BY timestamp DESC, id DESC
             LIMIT ?
-            ''',
+            """,
             (product_id, limit),
         ).fetchall()
 
@@ -240,8 +243,13 @@ def recent_signal_history(
 
 def paper_trading_summary(
     db_path: str | Path = DEFAULT_DB_PATH,
+    *,
+    starting_bankroll: float = 1000.0,
 ) -> dict[str, Any]:
-    return load_paper_trade_summary(db_path)
+    return load_paper_trade_summary(
+        db_path,
+        starting_bankroll=starting_bankroll,
+    )
 
 
 def recent_paper_decisions(
@@ -284,5 +292,73 @@ def recent_paper_trades(
             dataframe["opened_at"],
             utc=True,
         )
+        dataframe["closed_at"] = pd.to_datetime(
+            dataframe["closed_at"],
+            utc=True,
+            errors="coerce",
+        )
+
+        numeric_columns = [
+            "entry_price",
+            "model_probability",
+            "edge",
+            "contracts",
+            "stake",
+            "won",
+            "pnl",
+            "payout_per_contract",
+            "gross_payout",
+            "bankroll_before",
+            "bankroll_after",
+            "peak_bankroll",
+            "drawdown",
+        ]
+
+        for column in numeric_columns:
+            if column in dataframe.columns:
+                dataframe[column] = pd.to_numeric(
+                    dataframe[column],
+                    errors="coerce",
+                )
+
+    return dataframe
+
+
+def paper_bankroll_history(
+    limit: int = 1000,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    dataframe = pd.DataFrame(
+        load_bankroll_history(
+            limit=limit,
+            db_path=db_path,
+        )
+    )
+
+    if not dataframe.empty:
+        dataframe["settled_at"] = pd.to_datetime(
+            dataframe["settled_at"],
+            utc=True,
+        )
+
+        numeric_columns = [
+            "entry_price",
+            "contracts",
+            "stake",
+            "gross_payout",
+            "pnl",
+            "bankroll_before",
+            "bankroll_after",
+            "peak_bankroll",
+            "drawdown",
+            "won",
+        ]
+
+        for column in numeric_columns:
+            if column in dataframe.columns:
+                dataframe[column] = pd.to_numeric(
+                    dataframe[column],
+                    errors="coerce",
+                )
 
     return dataframe

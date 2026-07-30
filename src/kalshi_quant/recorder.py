@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from .automatic_signal_pipeline import AutomaticSignalPipeline
@@ -10,6 +11,9 @@ from .coinbase import stream_trades
 from .config import Settings
 from .db import DEFAULT_DB_PATH, log_event
 from .live_bar_builder import LiveBarBuilder
+from .paper_trade_lifecycle import (
+    PaperTradeSettlementEngine,
+)
 from .paper_trading_engine import PaperTradingEngine
 from .trade_store import (
     initialize_trade_store,
@@ -19,7 +23,7 @@ from .trade_store import (
 
 
 class CoinbaseTradeRecorder:
-    """Record trades, build bars, signals, and paper decisions."""
+    """Record trades, bars, signals, and paper lifecycle events."""
 
     def __init__(
         self,
@@ -61,6 +65,68 @@ class CoinbaseTradeRecorder:
             settings=self.settings,
             db_path=self.db_path,
         )
+        self.settlement_engine = PaperTradeSettlementEngine(
+            settings=self.settings,
+            rest_client=self.paper_engine.rest,
+            db_path=self.db_path,
+        )
+        self.settlement_check_seconds = max(
+            1.0,
+            self.settings.paper_settlement_check_seconds,
+        )
+        self._last_settlement_check = 0.0
+
+    async def _maybe_settle_paper_trades(
+        self,
+        *,
+        force: bool = False,
+    ) -> None:
+        now = monotonic()
+
+        if (
+            not force
+            and now - self._last_settlement_check
+            < self.settlement_check_seconds
+        ):
+            return
+
+        self._last_settlement_check = now
+
+        try:
+            batch = await asyncio.to_thread(
+                self.settlement_engine.settle_open_trades
+            )
+        except Exception as exc:
+            log_event(
+                level="ERROR",
+                component="paper_trade_settlement",
+                message="Paper settlement check failed",
+                details={"error": str(exc)},
+                db_path=self.db_path,
+            )
+            print(f"Settlement engine error: {exc}")
+            return
+
+        for outcome in batch.outcomes:
+            if not outcome.created:
+                continue
+
+            result = "WIN" if outcome.won else "LOSS"
+            print(
+                "Paper settlement | "
+                f"{outcome.market_ticker} | "
+                f"{outcome.side} | "
+                f"{result} | "
+                f"P&L ${outcome.pnl:+,.2f} | "
+                f"bankroll ${outcome.bankroll_after:,.2f} | "
+                f"drawdown {outcome.drawdown:.1%}"
+            )
+
+        if batch.errors:
+            print(
+                "Paper settlement check completed with "
+                f"{batch.errors} error(s)."
+            )
 
     async def on_trade(self, trade: dict[str, Any]) -> None:
         inserted = save_coinbase_trade(
@@ -137,6 +203,8 @@ class CoinbaseTradeRecorder:
                 )
                 print(f"Paper engine error: {exc}")
 
+        await self._maybe_settle_paper_trades()
+
         if self.session_count % self.status_interval == 0:
             total = trade_count(self.db_path)
 
@@ -155,6 +223,8 @@ class CoinbaseTradeRecorder:
                 f"closed now: {len(closed_bars)} | "
                 f"signals: {self.signal_pipeline.generated_count:,} | "
                 f"paper opens: {self.paper_engine.opened_count:,} | "
+                f"paper settlements: "
+                f"{self.settlement_engine.settled_count:,} | "
                 f"{bar_status}"
             )
 
@@ -165,7 +235,8 @@ class CoinbaseTradeRecorder:
             level="INFO",
             component="coinbase_recorder",
             message=(
-                "Coinbase bars, signals, and paper pipeline started"
+                "Coinbase bars, signals, and paper lifecycle "
+                "pipeline started"
             ),
             details={
                 "product_id": self.product_id,
@@ -175,12 +246,15 @@ class CoinbaseTradeRecorder:
                 "kalshi_market_ticker": (
                     self.settings.kalshi_market_ticker
                 ),
+                "settlement_check_seconds": (
+                    self.settlement_check_seconds
+                ),
             },
             db_path=self.db_path,
         )
 
         print(
-            "Kalshi BTC Quant System — Paper Trading Pipeline"
+            "Kalshi BTC Quant System — Paper Trade Lifecycle"
         )
         print(f"Product:          {self.product_id}")
         print(f"Database:         {self.db_path}")
@@ -205,6 +279,10 @@ class CoinbaseTradeRecorder:
                 else "DISABLED — configure KALSHI_MARKET_TICKER"
             )
         )
+        print(
+            "Settlement check: "
+            f"every {self.settlement_check_seconds:g} seconds"
+        )
         print("No live-order method is used by this recorder.")
         print("Press Control+C to stop.\n")
 
@@ -214,6 +292,7 @@ class CoinbaseTradeRecorder:
                 callback=self.on_trade,
             )
         finally:
+            await self._maybe_settle_paper_trades(force=True)
             flushed_bars = self.bar_builder.flush()
             signal_stats = self.signal_pipeline.stats()
 
@@ -221,7 +300,8 @@ class CoinbaseTradeRecorder:
                 level="INFO",
                 component="coinbase_recorder",
                 message=(
-                    "Coinbase bars, signals, and paper pipeline stopped"
+                    "Coinbase bars, signals, and paper lifecycle "
+                    "pipeline stopped"
                 ),
                 details={
                     "session_trades": self.session_count,
@@ -233,6 +313,18 @@ class CoinbaseTradeRecorder:
                     "paper_skipped": self.paper_engine.skipped_count,
                     "paper_blocked": self.paper_engine.blocked_count,
                     "paper_duplicates": self.paper_engine.duplicate_count,
+                    "settlement_markets_checked": (
+                        self.settlement_engine.checked_market_count
+                    ),
+                    "paper_settled": (
+                        self.settlement_engine.settled_count
+                    ),
+                    "paper_settlement_pending": (
+                        self.settlement_engine.pending_count
+                    ),
+                    "paper_settlement_errors": (
+                        self.settlement_engine.error_count
+                    ),
                 },
                 db_path=self.db_path,
             )
@@ -248,6 +340,10 @@ class CoinbaseTradeRecorder:
             print(
                 "Simulated paper trades opened this session: "
                 f"{self.paper_engine.opened_count:,}"
+            )
+            print(
+                "Paper trades settled this session: "
+                f"{self.settlement_engine.settled_count:,}"
             )
 
 

@@ -48,6 +48,9 @@ class Settings:
     paper_min_confidence: float = float(
         os.getenv("PAPER_MIN_CONFIDENCE", "0.25")
     )
+    paper_settlement_check_seconds: float = float(
+        os.getenv("PAPER_SETTLEMENT_CHECK_SECONDS", "30")
+    )
 
     min_edge: float = float(os.getenv("MIN_EDGE", "0.02"))
     cost_buffer: float = float(
