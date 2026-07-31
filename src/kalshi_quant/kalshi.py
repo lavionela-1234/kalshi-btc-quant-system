@@ -13,25 +13,101 @@ from .config import Settings
 
 @dataclass
 class Book:
-    yes: dict[int, int] = field(default_factory=dict)
-    no: dict[int, int] = field(default_factory=dict)
+    # Prices are stored internally as integer ten-thousandths of a
+    # dollar. This preserves Kalshi sub-cent prices while remaining
+    # compatible with legacy integer-cent orderbooks.
+    yes: dict[int, float] = field(default_factory=dict)
+    no: dict[int, float] = field(default_factory=dict)
+
+    @staticmethod
+    def _price_ticks(
+        value: Any,
+        *,
+        dollars: bool,
+    ) -> int:
+        parsed = float(value)
+        return int(round(parsed * (10000 if dollars else 100)))
+
+    @classmethod
+    def _levels(
+        cls,
+        values: Any,
+        *,
+        dollars: bool,
+    ) -> dict[int, float]:
+        levels: dict[int, float] = {}
+
+        for level in values or []:
+            if not isinstance(level, (list, tuple)) or len(level) < 2:
+                continue
+
+            price, quantity = level[0], level[1]
+            ticks = cls._price_ticks(price, dollars=dollars)
+            parsed_quantity = float(quantity)
+
+            if parsed_quantity > 0:
+                levels[ticks] = parsed_quantity
+
+        return levels
 
     def apply_snapshot(self, payload: dict[str, Any]) -> None:
-        self.yes = {
-            int(p): int(q)
-            for p, q in payload.get("yes", [])
-        }
-        self.no = {
-            int(p): int(q)
-            for p, q in payload.get("no", [])
-        }
+        yes_dollars = (
+            payload.get("yes_dollars")
+            or payload.get("yes_dollars_fp")
+        )
+        no_dollars = (
+            payload.get("no_dollars")
+            or payload.get("no_dollars_fp")
+        )
+
+        if yes_dollars is not None or no_dollars is not None:
+            self.yes = self._levels(yes_dollars, dollars=True)
+            self.no = self._levels(no_dollars, dollars=True)
+            return
+
+        self.yes = self._levels(payload.get("yes"), dollars=False)
+        self.no = self._levels(payload.get("no"), dollars=False)
 
     def apply_delta(self, payload: dict[str, Any]) -> None:
-        side = payload["side"]
-        price = int(payload["price"])
-        delta = int(payload["delta"])
+        side = str(
+            payload.get("side")
+            or payload.get("outcome_side")
+            or ""
+        ).lower()
+
+        if side not in {"yes", "no"}:
+            raise ValueError("Orderbook delta side must be yes or no")
+
+        if payload.get("price_dollars") is not None:
+            price = self._price_ticks(
+                payload["price_dollars"],
+                dollars=True,
+            )
+        elif payload.get("price_dollars_fp") is not None:
+            price = self._price_ticks(
+                payload["price_dollars_fp"],
+                dollars=True,
+            )
+        else:
+            price = self._price_ticks(
+                payload["price"],
+                dollars=False,
+            )
+
+        delta_raw = (
+            payload.get("delta_fp")
+            if payload.get("delta_fp") is not None
+            else payload.get("delta")
+        )
+
+        if delta_raw is None:
+            raise ValueError(
+                "Orderbook delta did not include a quantity change"
+            )
+
+        delta = float(delta_raw)
         book = self.yes if side == "yes" else self.no
-        new_qty = book.get(price, 0) + delta
+        new_qty = book.get(price, 0.0) + delta
 
         if new_qty <= 0:
             book.pop(price, None)
@@ -40,44 +116,37 @@ class Book:
 
     @property
     def yes_bid(self) -> float | None:
-        return max(self.yes) / 100 if self.yes else None
+        return max(self.yes) / 10000 if self.yes else None
 
     @property
     def no_bid(self) -> float | None:
-        return max(self.no) / 100 if self.no else None
+        return max(self.no) / 10000 if self.no else None
 
     @property
     def yes_ask(self) -> float | None:
-        return (
-            1 - self.no_bid
-            if self.no_bid is not None
-            else None
-        )
+        return 1 - self.no_bid if self.no_bid is not None else None
 
     @property
     def no_ask(self) -> float | None:
-        return (
-            1 - self.yes_bid
-            if self.yes_bid is not None
-            else None
-        )
+        return 1 - self.yes_bid if self.yes_bid is not None else None
 
     def imbalance(self, depth_cents: int = 10) -> float:
         """Top-of-book bid-size imbalance, normalized to [-1, 1]."""
         if not self.yes and not self.no:
             return 0.0
 
+        depth_ticks = max(0, int(depth_cents)) * 100
         ybest = max(self.yes) if self.yes else 0
         nbest = max(self.no) if self.no else 0
         yqty = sum(
             q
             for p, q in self.yes.items()
-            if p >= ybest - depth_cents
+            if p >= ybest - depth_ticks
         )
         nqty = sum(
             q
             for p, q in self.no.items()
-            if p >= nbest - depth_cents
+            if p >= nbest - depth_ticks
         )
         total = yqty + nqty
 
@@ -142,7 +211,11 @@ class KalshiREST:
             f"/markets/{ticker}/orderbook",
             params={"depth": depth},
         )
-        raw = data.get("orderbook", data)
+        raw = (
+            data.get("orderbook_fp")
+            or data.get("orderbook")
+            or data
+        )
         book = Book()
         book.apply_snapshot(raw)
         return book
