@@ -9,6 +9,10 @@ from .config import Settings
 from .db import DEFAULT_DB_PATH
 from .features import FeatureSnapshot
 from .kalshi import Book, KalshiREST
+from .market_discovery import (
+    MarketDiscoveryEngine,
+    MarketSelectionResult,
+)
 from .market_signal import MarketSignal
 from .paper_trade_store import (
     PaperDecisionRecord,
@@ -59,6 +63,11 @@ class PaperTradingEngine:
             if rest_client is not None
             else KalshiREST(self.settings)
         )
+        self.market_selector = MarketDiscoveryEngine(
+            settings=self.settings,
+            rest_client=self.rest,
+            db_path=self.db_path,
+        )
 
         self.evaluated_count = 0
         self.opened_count = 0
@@ -70,8 +79,30 @@ class PaperTradingEngine:
     def enabled(self) -> bool:
         return (
             self.settings.paper_mode
-            and bool(self.market_ticker)
+            and self.market_selector.enabled
         )
+
+    @property
+    def market_selection(self):
+        return self.market_selector.current
+
+    def refresh_market(
+        self,
+        *,
+        btc_price: float,
+        force: bool = False,
+    ) -> MarketSelectionResult:
+        result = self.market_selector.select_market(
+            btc_price=btc_price,
+            force=force,
+        )
+
+        if result.candidate is not None:
+            self.market_ticker = result.candidate.ticker
+        elif self.settings.kalshi_auto_discovery:
+            self.market_ticker = ""
+
+        return result
 
     @staticmethod
     def _parse_time(value: str) -> datetime:
@@ -84,7 +115,10 @@ class PaperTradingEngine:
         return timestamp.astimezone(timezone.utc)
 
     def _target_price(self, market: dict[str, Any]) -> float:
-        if self.settings.kalshi_target_price > 0:
+        if (
+            not self.settings.kalshi_auto_discovery
+            and self.settings.kalshi_target_price > 0
+        ):
             return self.settings.kalshi_target_price
 
         for key in (
@@ -252,6 +286,10 @@ class PaperTradingEngine:
                 "PAPER_MODE is disabled",
             )
 
+        selection = self.refresh_market(
+            btc_price=btc_price,
+        )
+
         if not self.market_ticker:
             self.skipped_count += 1
             return PaperTradeOutcome(
@@ -260,7 +298,7 @@ class PaperTradingEngine:
                 0.0,
                 0,
                 0.0,
-                "KALSHI_MARKET_TICKER is not configured",
+                selection.reason,
             )
 
         if signal.timestamp is None:

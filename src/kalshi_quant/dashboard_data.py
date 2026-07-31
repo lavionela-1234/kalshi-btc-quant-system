@@ -7,6 +7,10 @@ import pandas as pd
 
 from .bars import initialize_bar_store
 from .db import DEFAULT_DB_PATH, database_connection
+from .market_discovery import (
+    current_market_selection as load_current_market_selection,
+    recent_market_selections as load_market_selections,
+)
 from .paper_trade_lifecycle import (
     paper_bankroll_history as load_bankroll_history,
     paper_trade_summary as load_paper_trade_summary,
@@ -362,3 +366,54 @@ def paper_bankroll_history(
                 )
 
     return dataframe
+
+def current_market_selection(
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any] | None:
+    return load_current_market_selection(
+        db_path=db_path,
+    )
+
+
+def recent_market_selections(
+    limit: int = 200,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> pd.DataFrame:
+    dataframe = pd.DataFrame(
+        load_market_selections(
+            limit=limit,
+            db_path=db_path,
+        )
+    )
+
+    if dataframe.empty:
+        return dataframe
+
+    dataframe["selected_at"] = pd.to_datetime(
+        dataframe["selected_at"],
+        utc=True,
+    )
+
+    numeric_columns = [
+        "target_price",
+        "btc_price",
+        "seconds_remaining",
+        "yes_bid",
+        "yes_ask",
+        "no_bid",
+        "no_ask",
+        "spread",
+        "volume",
+        "open_interest",
+        "rollover",
+    ]
+
+    for column in numeric_columns:
+        if column in dataframe.columns:
+            dataframe[column] = pd.to_numeric(
+                dataframe[column],
+                errors="coerce",
+            )
+
+    return dataframe
+

@@ -25,6 +25,76 @@ class Settings:
         os.getenv("KALSHI_TARGET_PRICE", "0")
     )
 
+    kalshi_auto_discovery: bool = (
+        os.getenv(
+            "KALSHI_AUTO_DISCOVERY",
+            "true",
+        ).lower()
+        == "true"
+    )
+    kalshi_primary_series: str = os.getenv(
+        "KALSHI_PRIMARY_SERIES",
+        "KXBTC15M",
+    )
+    kalshi_fallback_series: str = os.getenv(
+        "KALSHI_FALLBACK_SERIES",
+        "KXBTCD",
+    )
+    market_discovery_refresh_seconds: float = float(
+        os.getenv(
+            "MARKET_DISCOVERY_REFRESH_SECONDS",
+            "15",
+        )
+    )
+    market_discovery_min_seconds: float = float(
+        os.getenv(
+            "MARKET_DISCOVERY_MIN_SECONDS",
+            "15",
+        )
+    )
+    market_discovery_max_seconds: float = float(
+        os.getenv(
+            "MARKET_DISCOVERY_MAX_SECONDS",
+            "1200",
+        )
+    )
+    market_discovery_max_spread: float = float(
+        os.getenv(
+            "MARKET_DISCOVERY_MAX_SPREAD",
+            "0.08",
+        )
+    )
+    market_discovery_min_price: float = float(
+        os.getenv(
+            "MARKET_DISCOVERY_MIN_PRICE",
+            "0.02",
+        )
+    )
+    market_discovery_max_price: float = float(
+        os.getenv(
+            "MARKET_DISCOVERY_MAX_PRICE",
+            "0.98",
+        )
+    )
+    market_discovery_max_target_distance: float = float(
+        os.getenv(
+            "MARKET_DISCOVERY_MAX_TARGET_DISTANCE",
+            "5000",
+        )
+    )
+    market_discovery_min_volume: float = float(
+        os.getenv(
+            "MARKET_DISCOVERY_MIN_VOLUME",
+            "0",
+        )
+    )
+    market_discovery_min_open_interest: float = float(
+        os.getenv(
+            "MARKET_DISCOVERY_MIN_OPEN_INTEREST",
+            "0",
+        )
+    )
+
     coinbase_product_id: str = os.getenv(
         "COINBASE_PRODUCT_ID",
         "BTC-USD",

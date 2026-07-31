@@ -42,6 +42,7 @@ class FakeRest:
 def make_settings(**overrides) -> Settings:
     values = {
         "paper_mode": True,
+        "kalshi_auto_discovery": False,
         "kalshi_market_ticker": "TEST-BTC",
         "kalshi_target_price": 63900.0,
         "paper_bankroll": 1000.0,

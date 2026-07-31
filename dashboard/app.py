@@ -13,10 +13,12 @@ import streamlit as st
 
 from kalshi_quant.backtest import metrics
 from kalshi_quant.dashboard_data import (
+    current_market_selection,
     market_summary,
     paper_bankroll_history,
     paper_trading_summary,
     recent_bars,
+    recent_market_selections,
     recent_paper_decisions,
     recent_paper_trades,
     recent_signal_history,
@@ -981,11 +983,27 @@ with tab4:
 
     st.subheader("Automatic paper trading and settlement")
 
+    selected_market = current_market_selection()
+    selection_history = recent_market_selections(limit=200)
+
     if not settings.paper_mode:
         st.error(
             "PAPER_MODE is disabled. No simulated entries will be "
             "created until PAPER_MODE=true."
         )
+    elif settings.kalshi_auto_discovery:
+        if selected_market is None:
+            st.info(
+                "Automatic Kalshi market discovery is enabled. "
+                "Start the recorder to select the first compatible "
+                "BTC market."
+            )
+        else:
+            st.success(
+                "Simulation only — automatic market discovery is "
+                "active. Selected market: "
+                f"{selected_market['market_ticker']}"
+            )
     elif not settings.kalshi_market_ticker:
         st.info(
             "Paper trading is ready but inactive. Configure "
@@ -995,6 +1013,137 @@ with tab4:
         st.success(
             "Simulation only — no live-order method is called. "
             f"Configured market: {settings.kalshi_market_ticker}"
+        )
+
+    st.subheader("Automatic Kalshi market discovery")
+
+    if settings.kalshi_auto_discovery:
+        st.caption(
+            f"Primary series: {settings.kalshi_primary_series} · "
+            f"Fallback series: {settings.kalshi_fallback_series} · "
+            "Only directional BTC contracts with acceptable time, "
+            "quotes, spread, price, target distance, and liquidity "
+            "are eligible."
+        )
+
+        if selected_market is None:
+            st.info(
+                "No market-selection record is stored yet. The "
+                "recorder creates one after its first successful "
+                "automatic discovery."
+            )
+        else:
+            discovery_kpis = st.columns(6)
+            discovery_kpis[0].metric(
+                "Selected market",
+                str(selected_market["market_ticker"]),
+            )
+            discovery_kpis[1].metric(
+                "Series",
+                str(selected_market["series_ticker"]),
+            )
+            discovery_kpis[2].metric(
+                "Target",
+                f"${float(selected_market['target_price']):,.2f}",
+            )
+            discovery_kpis[3].metric(
+                "BTC at selection",
+                f"${float(selected_market['btc_price']):,.2f}",
+            )
+            discovery_kpis[4].metric(
+                "Time left at selection",
+                f"{float(selected_market['seconds_remaining']):,.0f}s",
+            )
+            discovery_kpis[5].metric(
+                "Spread",
+                (
+                    f"{float(selected_market['spread']):.2%}"
+                    if selected_market.get("spread") is not None
+                    else "Unavailable"
+                ),
+            )
+
+            quote_kpis = st.columns(6)
+            quote_kpis[0].metric(
+                "YES ask",
+                (
+                    f"{float(selected_market['yes_ask']):.2%}"
+                    if selected_market.get("yes_ask") is not None
+                    else "Unavailable"
+                ),
+            )
+            quote_kpis[1].metric(
+                "NO ask",
+                (
+                    f"{float(selected_market['no_ask']):.2%}"
+                    if selected_market.get("no_ask") is not None
+                    else "Unavailable"
+                ),
+            )
+            quote_kpis[2].metric(
+                "Volume",
+                f"{float(selected_market['volume']):,.0f}",
+            )
+            quote_kpis[3].metric(
+                "Open interest",
+                f"{float(selected_market['open_interest']):,.0f}",
+            )
+            quote_kpis[4].metric(
+                "Selection type",
+                (
+                    "Rollover"
+                    if int(selected_market.get("rollover") or 0)
+                    else "Initial"
+                ),
+            )
+            quote_kpis[5].metric(
+                "Previous market",
+                str(
+                    selected_market.get("previous_ticker")
+                    or "None"
+                ),
+            )
+
+            st.caption(
+                "Selection reason: "
+                f"{selected_market['selection_reason']}"
+            )
+
+        if not selection_history.empty:
+            discovery_chart = px.scatter(
+                selection_history.sort_values("selected_at"),
+                x="selected_at",
+                y="target_price",
+                color="series_ticker",
+                symbol="rollover",
+                hover_data=[
+                    "market_ticker",
+                    "btc_price",
+                    "seconds_remaining",
+                    "yes_ask",
+                    "no_ask",
+                    "spread",
+                    "volume",
+                    "open_interest",
+                    "selection_reason",
+                    "previous_ticker",
+                ],
+                title="Automatic market selections and rollovers",
+            )
+            st.plotly_chart(
+                discovery_chart,
+                width="stretch",
+            )
+
+            st.dataframe(
+                selection_history,
+                width="stretch",
+                hide_index=True,
+            )
+    else:
+        st.info(
+            "Automatic discovery is disabled. The paper engine uses "
+            "the manually configured KALSHI_MARKET_TICKER."
         )
 
     top_kpis = st.columns(6)

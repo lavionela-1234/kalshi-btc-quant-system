@@ -246,6 +246,15 @@ class CoinbaseTradeRecorder:
                 "kalshi_market_ticker": (
                     self.settings.kalshi_market_ticker
                 ),
+                "kalshi_auto_discovery": (
+                    self.settings.kalshi_auto_discovery
+                ),
+                "kalshi_primary_series": (
+                    self.settings.kalshi_primary_series
+                ),
+                "kalshi_fallback_series": (
+                    self.settings.kalshi_fallback_series
+                ),
                 "settlement_check_seconds": (
                     self.settlement_check_seconds
                 ),
@@ -271,14 +280,22 @@ class CoinbaseTradeRecorder:
             f"{self.signal_pipeline.confirmation_interval_seconds}s "
             "confirmation"
         )
-        print(
-            "Paper trading:    "
-            + (
-                f"ENABLED for {self.paper_engine.market_ticker}"
-                if self.paper_engine.enabled
-                else "DISABLED — configure KALSHI_MARKET_TICKER"
+        if self.settings.kalshi_auto_discovery:
+            paper_status = (
+                "AUTO DISCOVERY — "
+                f"{self.settings.kalshi_primary_series} primary, "
+                f"{self.settings.kalshi_fallback_series} fallback"
             )
-        )
+        elif self.paper_engine.enabled:
+            paper_status = (
+                f"MANUAL — {self.paper_engine.market_ticker}"
+            )
+        else:
+            paper_status = (
+                "DISABLED — configure KALSHI_MARKET_TICKER"
+            )
+
+        print(f"Paper trading:    {paper_status}")
         print(
             "Settlement check: "
             f"every {self.settlement_check_seconds:g} seconds"
