@@ -17,6 +17,7 @@ from .paper_trade_lifecycle import (
     recent_paper_trades as load_paper_trades,
 )
 from .paper_trade_store import (
+    paper_entry_diagnostics as load_paper_entry_diagnostics,
     recent_paper_decisions as load_paper_decisions,
 )
 from .signal_store import recent_market_signals
@@ -253,6 +254,27 @@ def paper_trading_summary(
     return load_paper_trade_summary(
         db_path,
         starting_bankroll=starting_bankroll,
+    )
+
+
+def paper_entry_diagnostics(
+    db_path: str | Path = DEFAULT_DB_PATH,
+    *,
+    min_confidence: float = 0.25,
+    max_spread: float = 0.08,
+    min_seconds: float = 10.0,
+    max_seconds: float = 300.0,
+    min_edge: float = 0.02,
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        load_paper_entry_diagnostics(
+            db_path,
+            min_confidence=min_confidence,
+            max_spread=max_spread,
+            min_seconds=min_seconds,
+            max_seconds=max_seconds,
+            min_edge=min_edge,
+        )
     )
 
 

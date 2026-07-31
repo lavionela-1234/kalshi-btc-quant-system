@@ -400,6 +400,189 @@ def paper_trade_summary(
     }
 
 
+def paper_entry_diagnostics(
+    db_path: str | Path = DEFAULT_DB_PATH,
+    *,
+    min_confidence: float = 0.25,
+    max_spread: float = 0.08,
+    min_seconds: float = 10.0,
+    max_seconds: float = 300.0,
+    min_edge: float = 0.02,
+) -> list[dict[str, Any]]:
+    """Summarize sequential paper-entry gate performance."""
+
+    if not 0.0 <= min_confidence <= 1.0:
+        raise ValueError(
+            "min_confidence must be between zero and one"
+        )
+    if max_spread < 0.0:
+        raise ValueError("max_spread must not be negative")
+    if min_seconds < 0.0:
+        raise ValueError("min_seconds must not be negative")
+    if max_seconds < min_seconds:
+        raise ValueError(
+            "max_seconds must be greater than or equal to min_seconds"
+        )
+    if min_edge < 0.0:
+        raise ValueError("min_edge must not be negative")
+
+    initialize_paper_trade_store(db_path)
+
+    with database_connection(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                technical_action,
+                technical_confidence,
+                seconds_remaining,
+                yes_ask,
+                no_ask,
+                spread,
+                decision,
+                side,
+                edge
+            FROM paper_trade_decisions
+            ORDER BY signal_timestamp, id
+            """
+        ).fetchall()
+
+    gate_order = [
+        "Technical action",
+        "Confidence",
+        "Order book",
+        "Spread",
+        "Time window",
+        "Expected edge",
+        "Direction alignment",
+        "Risk controls",
+    ]
+
+    thresholds = {
+        "Technical action": "LONG_BIAS or SHORT_BIAS",
+        "Confidence": f">= {min_confidence:.1%}",
+        "Order book": "YES and NO asks available",
+        "Spread": f"<= {max_spread:.1%}",
+        "Time window": (
+            f"{min_seconds:.0f}s to {max_seconds:.0f}s remaining"
+        ),
+        "Expected edge": f">= {min_edge:.1%}",
+        "Direction alignment": (
+            "Kalshi edge side matches technical bias"
+        ),
+        "Risk controls": "Daily-loss and Kelly controls pass",
+    }
+
+    counts = {
+        gate: {
+            "evaluated": 0,
+            "passed": 0,
+            "failed": 0,
+        }
+        for gate in gate_order
+    }
+
+    def record(gate: str, passed: bool) -> bool:
+        counts[gate]["evaluated"] += 1
+
+        if passed:
+            counts[gate]["passed"] += 1
+        else:
+            counts[gate]["failed"] += 1
+
+        return passed
+
+    for row in rows:
+        technical_action = str(row["technical_action"])
+
+        if not record(
+            "Technical action",
+            technical_action in {"LONG_BIAS", "SHORT_BIAS"},
+        ):
+            continue
+
+        if not record(
+            "Confidence",
+            float(row["technical_confidence"]) >= min_confidence,
+        ):
+            continue
+
+        if not record(
+            "Order book",
+            row["yes_ask"] is not None
+            and row["no_ask"] is not None,
+        ):
+            continue
+
+        spread = row["spread"]
+
+        if not record(
+            "Spread",
+            spread is not None
+            and float(spread) <= max_spread,
+        ):
+            continue
+
+        seconds_remaining = float(row["seconds_remaining"])
+
+        if not record(
+            "Time window",
+            min_seconds
+            <= seconds_remaining
+            <= max_seconds,
+        ):
+            continue
+
+        if not record(
+            "Expected edge",
+            float(row["edge"]) >= min_edge,
+        ):
+            continue
+
+        expected_side = (
+            "YES"
+            if technical_action == "LONG_BIAS"
+            else "NO"
+        )
+
+        if not record(
+            "Direction alignment",
+            row["side"] == expected_side,
+        ):
+            continue
+
+        record(
+            "Risk controls",
+            row["decision"] == "OPEN",
+        )
+
+    total_decisions = len(rows)
+    diagnostics: list[dict[str, Any]] = []
+
+    for gate in gate_order:
+        evaluated = counts[gate]["evaluated"]
+        passed = counts[gate]["passed"]
+        failed = counts[gate]["failed"]
+
+        diagnostics.append(
+            {
+                "gate": gate,
+                "threshold": thresholds[gate],
+                "total_decisions": total_decisions,
+                "evaluated": evaluated,
+                "not_evaluated": total_decisions - evaluated,
+                "passed": passed,
+                "failed": failed,
+                "pass_rate": (
+                    passed / evaluated
+                    if evaluated
+                    else 0.0
+                ),
+            }
+        )
+
+    return diagnostics
+
+
 def recent_paper_decisions(
     *,
     limit: int = 200,

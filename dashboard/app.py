@@ -16,6 +16,7 @@ from kalshi_quant.dashboard_data import (
     current_market_selection,
     market_summary,
     paper_bankroll_history,
+    paper_entry_diagnostics,
     paper_trading_summary,
     recent_bars,
     recent_market_selections,
@@ -1245,6 +1246,124 @@ with tab4:
         st.plotly_chart(
             pnl_chart,
             width="stretch",
+        )
+
+    diagnostics = paper_entry_diagnostics(
+        min_confidence=settings.paper_min_confidence,
+        max_spread=settings.paper_max_spread,
+        min_seconds=settings.paper_min_seconds,
+        max_seconds=settings.paper_max_seconds,
+        min_edge=settings.min_edge,
+    )
+
+    st.subheader("Paper entry-gate diagnostics")
+
+    total_diagnostic_decisions = (
+        int(diagnostics["total_decisions"].max())
+        if not diagnostics.empty
+        else 0
+    )
+
+    if total_diagnostic_decisions == 0:
+        st.info(
+            "No paper decisions are available for gate diagnostics."
+        )
+    else:
+        diagnostics_display = diagnostics.copy()
+        diagnostics_display["pass_rate_percent"] = (
+            diagnostics_display["pass_rate"] * 100.0
+        )
+
+        failed_rows = diagnostics_display[
+            diagnostics_display["failed"] > 0
+        ]
+
+        if failed_rows.empty:
+            top_blocking_gate = "None"
+            top_blocking_count = 0
+        else:
+            top_blocking_row = failed_rows.loc[
+                failed_rows["failed"].idxmax()
+            ]
+            top_blocking_gate = str(top_blocking_row["gate"])
+            top_blocking_count = int(top_blocking_row["failed"])
+
+        risk_row = diagnostics_display[
+            diagnostics_display["gate"] == "Risk controls"
+        ].iloc[0]
+
+        diagnostic_kpis = st.columns(4)
+
+        diagnostic_kpis[0].metric(
+            "Decisions analyzed",
+            f"{total_diagnostic_decisions:,}",
+        )
+        diagnostic_kpis[1].metric(
+            "Reached risk controls",
+            f"{int(risk_row['evaluated']):,}",
+        )
+        diagnostic_kpis[2].metric(
+            "Passed all gates",
+            f"{int(risk_row['passed']):,}",
+        )
+        diagnostic_kpis[3].metric(
+            "Largest blocking gate",
+            top_blocking_gate,
+            delta=f"{top_blocking_count:,} failed",
+            delta_color="off",
+        )
+
+        gate_chart = px.bar(
+            diagnostics_display,
+            x="gate",
+            y=["passed", "failed"],
+            barmode="group",
+            hover_data=[
+                "threshold",
+                "evaluated",
+                "not_evaluated",
+                "pass_rate_percent",
+            ],
+            labels={
+                "value": "Decision count",
+                "variable": "Result",
+                "gate": "Entry gate",
+                "pass_rate_percent": "Pass rate (%)",
+            },
+            title="Sequential paper-entry gate results",
+        )
+
+        st.plotly_chart(
+            gate_chart,
+            width="stretch",
+        )
+
+        st.dataframe(
+            diagnostics_display[
+                [
+                    "gate",
+                    "threshold",
+                    "evaluated",
+                    "passed",
+                    "failed",
+                    "not_evaluated",
+                    "pass_rate_percent",
+                ]
+            ],
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "gate": "Entry gate",
+                "threshold": "Required condition",
+                "evaluated": "Evaluated",
+                "passed": "Passed",
+                "failed": "Failed",
+                "not_evaluated": "Not reached",
+                "pass_rate_percent": st.column_config.NumberColumn(
+                    "Pass rate",
+                    format="%.1f%%",
+                ),
+            },
         )
 
     decisions = recent_paper_decisions(limit=200)
