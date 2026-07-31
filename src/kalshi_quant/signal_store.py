@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -186,6 +187,364 @@ def signal_history_count(
             ).fetchone()
 
     return int(row["count"])
+
+
+def signal_calibration_report(
+    *,
+    product_id: str = "BTC-USD",
+    interval_seconds: int = 5,
+    scenarios: list[tuple[float, float]] | None = None,
+    episode_gap_seconds: float = 15.0,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    """Summarize signal strength and independent candidate episodes."""
+
+    if interval_seconds <= 0:
+        raise ValueError(
+            "interval_seconds must be greater than zero"
+        )
+
+    if episode_gap_seconds <= 0.0:
+        raise ValueError(
+            "episode_gap_seconds must be greater than zero"
+        )
+
+    if scenarios is None:
+        scenarios = [
+            (15.0, 0.15),
+            (18.0, 0.15),
+            (20.0, 0.15),
+            (20.0, 0.20),
+            (22.0, 0.20),
+            (25.0, 0.25),
+            (30.0, 0.30),
+        ]
+
+    normalized_scenarios: list[tuple[float, float]] = []
+
+    for score_threshold, confidence_threshold in scenarios:
+        score_value = float(score_threshold)
+        confidence_value = float(confidence_threshold)
+
+        if score_value < 0.0:
+            raise ValueError(
+                "score thresholds must not be negative"
+            )
+
+        if not 0.0 <= confidence_value <= 1.0:
+            raise ValueError(
+                "confidence thresholds must be between zero and one"
+            )
+
+        normalized_scenarios.append(
+            (score_value, confidence_value)
+        )
+
+    initialize_signal_store(db_path)
+
+    with database_connection(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                timestamp,
+                direction,
+                action,
+                score,
+                confidence,
+                probability_up,
+                volatility_regime
+            FROM technical_signal_history
+            WHERE product_id = ?
+              AND interval_seconds = ?
+            ORDER BY timestamp, id
+            """,
+            (
+                product_id,
+                interval_seconds,
+            ),
+        ).fetchall()
+
+    total_signals = len(rows)
+
+    action_names = [
+        "LONG_BIAS",
+        "SHORT_BIAS",
+        "NO_TRADE",
+    ]
+    action_counts = {
+        action: 0
+        for action in action_names
+    }
+
+    for row in rows:
+        action = str(row["action"])
+        action_counts[action] = (
+            action_counts.get(action, 0) + 1
+        )
+
+    scores = [
+        float(row["score"])
+        for row in rows
+    ]
+    absolute_scores = [
+        abs(score)
+        for score in scores
+    ]
+    confidences = [
+        float(row["confidence"])
+        for row in rows
+    ]
+
+    summary = {
+        "product_id": product_id,
+        "interval_seconds": interval_seconds,
+        "episode_gap_seconds": episode_gap_seconds,
+        "total_signals": total_signals,
+        "first_timestamp": (
+            str(rows[0]["timestamp"])
+            if rows
+            else None
+        ),
+        "last_timestamp": (
+            str(rows[-1]["timestamp"])
+            if rows
+            else None
+        ),
+        "long_bias_count": action_counts.get(
+            "LONG_BIAS",
+            0,
+        ),
+        "short_bias_count": action_counts.get(
+            "SHORT_BIAS",
+            0,
+        ),
+        "no_trade_count": action_counts.get(
+            "NO_TRADE",
+            0,
+        ),
+        "minimum_score": (
+            min(scores)
+            if scores
+            else None
+        ),
+        "maximum_score": (
+            max(scores)
+            if scores
+            else None
+        ),
+        "average_absolute_score": (
+            sum(absolute_scores) / total_signals
+            if total_signals
+            else 0.0
+        ),
+        "average_confidence": (
+            sum(confidences) / total_signals
+            if total_signals
+            else 0.0
+        ),
+        "maximum_confidence": (
+            max(confidences)
+            if confidences
+            else 0.0
+        ),
+    }
+
+    action_rows = []
+
+    for action in action_names:
+        count = action_counts.get(action, 0)
+
+        action_rows.append(
+            {
+                "action": action,
+                "count": count,
+                "rate": (
+                    count / total_signals
+                    if total_signals
+                    else 0.0
+                ),
+            }
+        )
+
+    def candidate_episode_summary(
+        score_threshold: float,
+        confidence_threshold: float,
+    ) -> dict[str, float | int]:
+        episodes: list[dict[str, Any]] = []
+        active_episode: dict[str, Any] | None = None
+
+        for row in rows:
+            score = float(row["score"])
+            confidence = float(row["confidence"])
+
+            direction = (
+                "LONG"
+                if score >= score_threshold
+                and confidence >= confidence_threshold
+                else "SHORT"
+                if score <= -score_threshold
+                and confidence >= confidence_threshold
+                else None
+            )
+
+            timestamp = datetime.fromisoformat(
+                str(row["timestamp"]).replace(
+                    "Z",
+                    "+00:00",
+                )
+            )
+
+            if direction is None:
+                if active_episode is not None:
+                    episodes.append(active_episode)
+                    active_episode = None
+                continue
+
+            if active_episode is not None:
+                gap = (
+                    timestamp
+                    - active_episode["last_timestamp"]
+                ).total_seconds()
+
+                if (
+                    active_episode["direction"] == direction
+                    and gap <= episode_gap_seconds
+                ):
+                    active_episode["signal_count"] += 1
+                    active_episode["last_timestamp"] = timestamp
+                    continue
+
+                episodes.append(active_episode)
+
+            active_episode = {
+                "direction": direction,
+                "signal_count": 1,
+                "first_timestamp": timestamp,
+                "last_timestamp": timestamp,
+            }
+
+        if active_episode is not None:
+            episodes.append(active_episode)
+
+        episode_count = len(episodes)
+        episode_signal_total = sum(
+            int(episode["signal_count"])
+            for episode in episodes
+        )
+
+        return {
+            "candidate_episode_count": episode_count,
+            "long_episodes": sum(
+                episode["direction"] == "LONG"
+                for episode in episodes
+            ),
+            "short_episodes": sum(
+                episode["direction"] == "SHORT"
+                for episode in episodes
+            ),
+            "average_signals_per_episode": (
+                episode_signal_total / episode_count
+                if episode_count
+                else 0.0
+            ),
+        }
+
+    threshold_rows = []
+
+    for score_threshold, confidence_threshold in (
+        normalized_scenarios
+    ):
+        long_candidates = sum(
+            score >= score_threshold
+            and confidence >= confidence_threshold
+            for score, confidence in zip(
+                scores,
+                confidences,
+            )
+        )
+        short_candidates = sum(
+            score <= -score_threshold
+            and confidence >= confidence_threshold
+            for score, confidence in zip(
+                scores,
+                confidences,
+            )
+        )
+        candidate_count = (
+            long_candidates + short_candidates
+        )
+
+        episode_metrics = candidate_episode_summary(
+            score_threshold,
+            confidence_threshold,
+        )
+
+        threshold_rows.append(
+            {
+                "score_threshold": score_threshold,
+                "confidence_threshold": (
+                    confidence_threshold
+                ),
+                "candidate_count": candidate_count,
+                "candidate_rate": (
+                    candidate_count / total_signals
+                    if total_signals
+                    else 0.0
+                ),
+                "long_candidates": long_candidates,
+                "short_candidates": short_candidates,
+                **episode_metrics,
+                "theoretical_candidate_signals_per_hour": (
+                    candidate_count / total_signals
+                    * (3600.0 / interval_seconds)
+                    if total_signals
+                    else 0.0
+                ),
+            }
+        )
+
+    score_bucket_definitions = [
+        ("0 to <10", 0.0, 10.0),
+        ("10 to <15", 10.0, 15.0),
+        ("15 to <20", 15.0, 20.0),
+        ("20 to <25", 20.0, 25.0),
+        ("25 to <30", 25.0, 30.0),
+        ("30 or more", 30.0, None),
+    ]
+
+    score_buckets = []
+
+    for label, lower, upper in score_bucket_definitions:
+        if upper is None:
+            count = sum(
+                value >= lower
+                for value in absolute_scores
+            )
+        else:
+            count = sum(
+                lower <= value < upper
+                for value in absolute_scores
+            )
+
+        score_buckets.append(
+            {
+                "score_bucket": label,
+                "count": count,
+                "rate": (
+                    count / total_signals
+                    if total_signals
+                    else 0.0
+                ),
+            }
+        )
+
+    return {
+        "summary": summary,
+        "action_counts": action_rows,
+        "threshold_scenarios": threshold_rows,
+        "score_buckets": score_buckets,
+    }
+
 
 
 def latest_market_signal(

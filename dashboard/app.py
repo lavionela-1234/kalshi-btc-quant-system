@@ -18,6 +18,7 @@ from kalshi_quant.dashboard_data import (
     paper_bankroll_history,
     paper_entry_diagnostics,
     paper_trading_summary,
+    signal_calibration_report,
     recent_bars,
     recent_market_selections,
     recent_paper_decisions,
@@ -1205,6 +1206,204 @@ with tab4:
         "edge, spread, time-window, daily-loss, and Kelly-size checks. "
         "Open trades close only after a final YES or NO market result."
     )
+
+    calibration = signal_calibration_report(
+        product_id="BTC-USD",
+        interval_seconds=5,
+        episode_gap_seconds=15.0,
+    )
+
+    calibration_summary = calibration["summary"]
+    calibration_actions = calibration["action_counts"]
+    calibration_scenarios = calibration["threshold_scenarios"]
+    calibration_buckets = calibration["score_buckets"]
+
+    st.subheader("Signal calibration report")
+
+    total_calibration_signals = int(
+        calibration_summary["total_signals"]
+    )
+
+    if total_calibration_signals == 0:
+        st.info(
+            "No stored technical signals are available for "
+            "calibration reporting."
+        )
+    else:
+        current_scenario_rows = calibration_scenarios[
+            (
+                calibration_scenarios["score_threshold"]
+                .sub(25.0)
+                .abs()
+                < 1e-9
+            )
+            & (
+                calibration_scenarios["confidence_threshold"]
+                .sub(0.25)
+                .abs()
+                < 1e-9
+            )
+        ]
+
+        current_scenario = (
+            current_scenario_rows.iloc[0]
+            if not current_scenario_rows.empty
+            else None
+        )
+
+        calibration_kpis = st.columns(6)
+
+        calibration_kpis[0].metric(
+            "Signals analyzed",
+            f"{total_calibration_signals:,}",
+        )
+        calibration_kpis[1].metric(
+            "LONG bias",
+            f"{int(calibration_summary['long_bias_count']):,}",
+        )
+        calibration_kpis[2].metric(
+            "SHORT bias",
+            f"{int(calibration_summary['short_bias_count']):,}",
+        )
+
+        if current_scenario is None:
+            calibration_kpis[3].metric(
+                "Candidate signals",
+                "N/A",
+            )
+            calibration_kpis[4].metric(
+                "Candidate episodes",
+                "N/A",
+            )
+            calibration_kpis[5].metric(
+                "Signals per episode",
+                "N/A",
+            )
+        else:
+            calibration_kpis[3].metric(
+                "Candidate signals",
+                f"{int(current_scenario['candidate_count']):,}",
+            )
+            calibration_kpis[4].metric(
+                "Candidate episodes",
+                (
+                    f"{int(current_scenario['candidate_episode_count']):,}"
+                ),
+            )
+            calibration_kpis[5].metric(
+                "Signals per episode",
+                (
+                    f"{float(current_scenario['average_signals_per_episode']):.1f}"
+                ),
+            )
+
+        st.caption(
+            "Candidate episodes combine consecutive signals in the "
+            "same direction when the gap is no greater than "
+            f"{calibration_summary['episode_gap_seconds']:.0f} seconds. "
+            "The current comparison uses score ±25 and confidence 25%."
+        )
+
+        calibration_chart_columns = st.columns(2)
+
+        action_chart = px.bar(
+            calibration_actions,
+            x="action",
+            y="count",
+            text="count",
+            hover_data=["rate"],
+            labels={
+                "action": "Technical action",
+                "count": "Signals",
+                "rate": "Share",
+            },
+            title="Stored technical-action distribution",
+        )
+
+        action_chart.update_traces(
+            textposition="outside",
+        )
+
+        calibration_chart_columns[0].plotly_chart(
+            action_chart,
+            width="stretch",
+        )
+
+        score_bucket_chart = px.bar(
+            calibration_buckets,
+            x="score_bucket",
+            y="count",
+            text="count",
+            hover_data=["rate"],
+            labels={
+                "score_bucket": "Absolute score range",
+                "count": "Signals",
+                "rate": "Share",
+            },
+            title="Absolute technical-score distribution",
+        )
+
+        score_bucket_chart.update_traces(
+            textposition="outside",
+        )
+
+        calibration_chart_columns[1].plotly_chart(
+            score_bucket_chart,
+            width="stretch",
+        )
+
+        scenario_display = calibration_scenarios.copy()
+        scenario_display["confidence_threshold_percent"] = (
+            scenario_display["confidence_threshold"] * 100.0
+        )
+        scenario_display["candidate_rate_percent"] = (
+            scenario_display["candidate_rate"] * 100.0
+        )
+
+        st.dataframe(
+            scenario_display[
+                [
+                    "score_threshold",
+                    "confidence_threshold_percent",
+                    "candidate_count",
+                    "candidate_episode_count",
+                    "long_episodes",
+                    "short_episodes",
+                    "average_signals_per_episode",
+                    "candidate_rate_percent",
+                ]
+            ],
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "score_threshold": st.column_config.NumberColumn(
+                    "Score threshold",
+                    format="%.0f",
+                ),
+                "confidence_threshold_percent": (
+                    st.column_config.NumberColumn(
+                        "Confidence threshold",
+                        format="%.0f%%",
+                    )
+                ),
+                "candidate_count": "Candidate signals",
+                "candidate_episode_count": "Candidate episodes",
+                "long_episodes": "LONG episodes",
+                "short_episodes": "SHORT episodes",
+                "average_signals_per_episode": (
+                    st.column_config.NumberColumn(
+                        "Signals per episode",
+                        format="%.1f",
+                    )
+                ),
+                "candidate_rate_percent": (
+                    st.column_config.NumberColumn(
+                        "Candidate rate",
+                        format="%.1f%%",
+                    )
+                ),
+            },
+        )
 
     history = paper_bankroll_history(limit=1000)
 

@@ -20,7 +20,10 @@ from .paper_trade_store import (
     paper_entry_diagnostics as load_paper_entry_diagnostics,
     recent_paper_decisions as load_paper_decisions,
 )
-from .signal_store import recent_market_signals
+from .signal_store import (
+    recent_market_signals,
+    signal_calibration_report as load_signal_calibration_report,
+)
 from .trade_store import initialize_trade_store
 
 
@@ -196,6 +199,34 @@ def recent_trades(
         )
 
     return dataframe
+
+
+def signal_calibration_report(
+    product_id: str = "BTC-USD",
+    interval_seconds: int = 5,
+    episode_gap_seconds: float = 15.0,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    report = load_signal_calibration_report(
+        product_id=product_id,
+        interval_seconds=interval_seconds,
+        episode_gap_seconds=episode_gap_seconds,
+        db_path=db_path,
+    )
+
+    return {
+        "summary": report["summary"],
+        "action_counts": pd.DataFrame(
+            report["action_counts"]
+        ),
+        "threshold_scenarios": pd.DataFrame(
+            report["threshold_scenarios"]
+        ),
+        "score_buckets": pd.DataFrame(
+            report["score_buckets"]
+        ),
+    }
+
 
 
 def recent_signal_history(
