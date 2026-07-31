@@ -17,6 +17,7 @@ from .market_signal import MarketSignal
 from .paper_trade_store import (
     PaperDecisionRecord,
     paper_decision_exists,
+    paper_entry_block_reason,
     realized_pnl_today,
     save_paper_decision,
 )
@@ -440,6 +441,39 @@ class PaperTradingEngine:
                     0,
                     0.0,
                     "Kalshi edge side conflicts with technical direction",
+                ),
+            )
+
+        entry_block_reason = paper_entry_block_reason(
+            market_ticker=self.market_ticker,
+            side=edge_signal.side,
+            signal_timestamp=str(signal.timestamp),
+            minimum_confidence=self.settings.paper_min_confidence,
+            episode_gap_seconds=(
+                self.settings.paper_episode_gap_seconds
+            ),
+            cooldown_seconds=(
+                self.settings.paper_reentry_cooldown_seconds
+            ),
+            db_path=self.db_path,
+        )
+
+        if entry_block_reason is not None:
+            self.blocked_count += 1
+            return self._save_outcome(
+                signal=signal,
+                market=market,
+                btc_price=btc_price,
+                target_price=target_price,
+                seconds_remaining=seconds_remaining,
+                book=book,
+                outcome=PaperTradeOutcome(
+                    "BLOCKED",
+                    edge_signal.side,
+                    edge_signal.edge,
+                    0,
+                    0.0,
+                    entry_block_reason,
                 ),
             )
 

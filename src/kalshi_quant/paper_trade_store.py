@@ -346,6 +346,156 @@ def save_paper_decision(
         )
 
 
+
+def _parse_utc_timestamp(value: str) -> datetime:
+    normalized = str(value).replace("Z", "+00:00")
+    timestamp = datetime.fromisoformat(normalized)
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+    return timestamp.astimezone(timezone.utc)
+
+
+def paper_entry_block_reason(
+    *,
+    market_ticker: str,
+    side: str,
+    signal_timestamp: str,
+    minimum_confidence: float,
+    episode_gap_seconds: float,
+    cooldown_seconds: float,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> str | None:
+    """Return a restart-safe reason that blocks a repeated paper entry."""
+
+    if side not in {"YES", "NO"}:
+        raise ValueError("side must be YES or NO")
+
+    if episode_gap_seconds < 0:
+        raise ValueError(
+            "episode_gap_seconds must be zero or greater"
+        )
+
+    if cooldown_seconds < 0:
+        raise ValueError(
+            "cooldown_seconds must be zero or greater"
+        )
+
+    initialize_paper_trade_store(db_path)
+    current_time = _parse_utc_timestamp(signal_timestamp)
+    expected_action = (
+        "LONG_BIAS"
+        if side == "YES"
+        else "SHORT_BIAS"
+    )
+
+    with database_connection(db_path) as connection:
+        open_trade = connection.execute(
+            """
+            SELECT id
+            FROM paper_trades
+            WHERE market_ticker = ?
+              AND side = ?
+              AND status = 'OPEN'
+            ORDER BY opened_at DESC, id DESC
+            LIMIT 1
+            """,
+            (market_ticker, side),
+        ).fetchone()
+
+        if open_trade is not None:
+            return "OPEN_POSITION"
+
+        if cooldown_seconds > 0:
+            latest_closed = connection.execute(
+                """
+                SELECT closed_at
+                FROM paper_trades
+                WHERE market_ticker = ?
+                  AND side = ?
+                  AND status != 'OPEN'
+                  AND closed_at IS NOT NULL
+                ORDER BY closed_at DESC, id DESC
+                LIMIT 1
+                """,
+                (market_ticker, side),
+            ).fetchone()
+
+            if latest_closed is not None:
+                closed_time = _parse_utc_timestamp(
+                    str(latest_closed["closed_at"])
+                )
+                elapsed = (
+                    current_time - closed_time
+                ).total_seconds()
+
+                if 0 <= elapsed < cooldown_seconds:
+                    return "COOLDOWN"
+
+        latest_open_decision = connection.execute(
+            """
+            SELECT id, signal_timestamp
+            FROM paper_trade_decisions
+            WHERE market_ticker = ?
+              AND side = ?
+              AND decision = 'OPEN'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (market_ticker, side),
+        ).fetchone()
+
+        if latest_open_decision is None:
+            return None
+
+        previous_time = _parse_utc_timestamp(
+            str(latest_open_decision["signal_timestamp"])
+        )
+
+        later_decisions = connection.execute(
+            """
+            SELECT
+                signal_timestamp,
+                technical_action,
+                technical_confidence
+            FROM paper_trade_decisions
+            WHERE market_ticker = ?
+              AND id > ?
+            ORDER BY id
+            """,
+            (
+                market_ticker,
+                int(latest_open_decision["id"]),
+            ),
+        ).fetchall()
+
+    for decision in later_decisions:
+        decision_time = _parse_utc_timestamp(
+            str(decision["signal_timestamp"])
+        )
+        gap = (decision_time - previous_time).total_seconds()
+
+        if (
+            decision["technical_action"] != expected_action
+            or float(decision["technical_confidence"])
+            < minimum_confidence
+            or gap < 0
+            or gap > episode_gap_seconds
+        ):
+            return None
+
+        previous_time = decision_time
+
+    current_gap = (
+        current_time - previous_time
+    ).total_seconds()
+
+    if 0 <= current_gap <= episode_gap_seconds:
+        return "ACTIVE_EPISODE"
+
+    return None
+
 def paper_trade_summary(
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> dict[str, Any]:
