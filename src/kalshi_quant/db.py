@@ -9,11 +9,20 @@ from typing import Any, Iterator
 
 
 DEFAULT_DB_PATH = Path("data/kalshi_quant.sqlite3")
+CURRENT_SCHEMA_VERSION = 1
 
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
+
+CREATE TABLE IF NOT EXISTS schema_versions (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT OR IGNORE INTO schema_versions (version)
+VALUES (1);
 
 CREATE TABLE IF NOT EXISTS markets (
     ticker TEXT PRIMARY KEY,
@@ -95,6 +104,7 @@ def connect(
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute("PRAGMA busy_timeout=5000")
 
     return connection
 
