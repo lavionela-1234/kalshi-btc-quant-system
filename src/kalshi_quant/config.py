@@ -161,13 +161,15 @@ class Settings:
                 self.paper_settlement_check_seconds
             ),
             "PAPER_EPISODE_GAP_SECONDS": self.paper_episode_gap_seconds,
-            "PAPER_REENTRY_COOLDOWN_SECONDS": (
-                self.paper_reentry_cooldown_seconds
-            ),
         }
         for name, value in positive.items():
             if value <= 0:
                 raise ValueError(f"{name} must be greater than zero")
+
+        if self.paper_reentry_cooldown_seconds < 0:
+            raise ValueError(
+                "PAPER_REENTRY_COOLDOWN_SECONDS cannot be negative"
+            )
 
         fractions = {
             "PAPER_MIN_CONFIDENCE": (
