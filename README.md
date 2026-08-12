@@ -1,90 +1,110 @@
 # Kalshi BTC Quant System
 
-A research-first, paper-trading system for short-duration Kalshi Bitcoin event contracts.
+A research-first system for collecting Bitcoin market data, generating
+technical signals, discovering compatible Kalshi BTC markets, and evaluating
+those signals through paper trading.
 
-## What it does
+> **Safety status:** The repository's `develop` branch simulates trades only.
+> It does not contain a production order-placement implementation.
 
-- Connects to Kalshi REST market data and authenticated WebSockets.
-- Streams BTC-USD trades from Coinbase Advanced Trade.
-- Calculates distance to strike, realized volatility, trend, momentum, time remaining, and Kalshi order-book imbalance.
-- Estimates settlement probability with:
-  1. a transparent volatility model available immediately, and
-  2. a trainable historical logistic-regression model.
-- Flags a trade only when model edge exceeds configurable transaction-cost and safety buffers.
-- Includes fixed-risk and fractional-Kelly sizing.
-- Includes a CSV backtesting engine and Streamlit dashboard.
-- Defaults to **paper mode**. It does not place live orders automatically.
+## Current architecture
+
+The development branch includes:
+
+- Coinbase BTC-USD trade recording with SQLite deduplication.
+- 1-second, 5-second, and 60-second market-bar construction.
+- EMA, VWAP, RSI, volatility, momentum, and order-flow indicators.
+- Automatic technical-signal generation on completed bars.
+- Discovery and rollover for compatible Kalshi BTC markets.
+- Paper-entry gates for direction, confidence, spread, time remaining,
+  duplicate episodes, reentry cooldown, and daily loss.
+- Paper-trade settlement, bankroll accounting, and calibration reports.
+- A Streamlit dashboard for recorder health, signals, markets, paper trades,
+  settlement, and calibration.
+
+The system stores operational state in `data/kalshi_quant.sqlite3`.
 
 ## Important model limitation
 
-The correct BTC reference feed and settlement rules must match the exact Kalshi market. Coinbase BTC-USD is included as a convenient live signal, but it may differ from Kalshi’s official settlement source. Verify the market rules before relying on the signal.
+Coinbase BTC-USD is a convenient signal feed, but it may differ from the
+reference and settlement source specified by an individual Kalshi market.
+Always verify the exact market rules and settlement source. Paper performance
+does not establish that a strategy will remain profitable with real fees,
+latency, liquidity, or slippage.
 
-## Quick start
+## Installation
 
 ```bash
-cd kalshi_btc_quant_system
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+git clone https://github.com/lavionela-1234/kalshi-btc-quant-system.git
+cd kalshi-btc-quant-system
+git switch develop
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install -e .
 cp .env.example .env
 ```
 
-Add your Kalshi API key ID and private-key path to `.env`. Start with Kalshi’s demo environment.
+Add the Kalshi API key ID and the absolute private-key path to `.env`.
+Keep `KALSHI_ENV=demo` and `PAPER_MODE=true` while validating the system.
 
-Run the live paper-trading engine:
+## Verification
 
-```bash
-python -m kalshi_quant.cli live --ticker YOUR_MARKET_TICKER --target 64028.26
-```
-
-Run a backtest:
+Run the entire test suite:
 
 ```bash
-python -m kalshi_quant.cli backtest \
-  --csv data/sample_backtest.csv \
-  --bankroll 1000 \
-  --output data/backtest_results.csv
+python -m pytest -q
 ```
 
-Open the dashboard:
+Compile the source and dashboard:
+
+```bash
+python -m compileall -q src dashboard
+```
+
+GitHub Actions runs both checks on pull requests and pushes to `develop` or
+`main` using Python 3.11 and 3.12.
+
+## Dashboard
 
 ```bash
 streamlit run dashboard/app.py
 ```
 
-## Input CSV schema
+The dashboard reads the local SQLite database. The recorder and signal
+pipeline must be running before live market panels populate.
 
-Each row is one decision snapshot:
+## Configuration safeguards
 
-```text
-timestamp,market_ticker,btc_price,target_price,seconds_remaining,
-yes_bid,yes_ask,no_bid,no_ask,yes_bid_size,no_bid_size,
-ret_5s,ret_15s,ret_60s,rv_60s,rv_300s,trend_ema,settled_up
-```
+Settings are validated at process startup. The application refuses invalid
+environments, nonpositive bankrolls or intervals, percentages outside their
+safe ranges, inverted time windows, and invalid discovery price bounds.
 
-`settled_up` is 1 when BTC settled above the market target and 0 otherwise.
+SQLite uses foreign keys, WAL journaling, a five-second busy timeout,
+transaction rollback on failure, and an explicit schema-version record.
 
-## Recommended workflow
+## Branches
 
-1. Collect live snapshots in paper mode.
-2. Add verified settlement outcomes.
-3. Backtest with walk-forward splits.
-4. Calibrate the model.
-5. Paper trade for several weeks.
-6. Use Kalshi demo execution before considering production.
-7. Keep production order placement behind a manual confirmation and hard daily-loss limit.
+- `main`: stable releases.
+- `develop`: integrated development.
+- Feature and stabilization work should enter through reviewed pull requests.
 
-## Risk controls
+Do not merge a branch into `main` until CI passes and any locally running bot
+has been compared with the GitHub code.
 
-The default configuration includes:
+## Before any future live execution
 
-- 2 percentage-point minimum model edge.
-- Additional fee/slippage buffer.
-- 0.25 fractional Kelly.
-- 1% fixed-risk alternative.
-- 2% maximum bankroll exposure per position.
-- 5% daily-loss stop.
-- Maximum one open signal per market.
-- No signal when the spread or data age exceeds limits.
+A separate, reviewed execution layer should require all of the following:
 
-This is research software, not a guarantee of profit.
+- Explicit production confirmation.
+- BTC-series allowlist.
+- Maximum order dollars and maximum open positions.
+- Persistent daily-loss circuit breaker and kill switch.
+- Stale-data and disconnected-feed shutdown.
+- Idempotent client order IDs.
+- Exchange-position and fill reconciliation.
+- Fee, partial-fill, and slippage accounting.
+- Restart and crash-recovery tests.
+
+This is research software, not financial advice or a guarantee of profit.
